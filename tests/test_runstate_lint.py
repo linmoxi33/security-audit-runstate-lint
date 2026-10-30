@@ -173,6 +173,7 @@ class RunStateLintTest(unittest.TestCase):
         code, payload, _ = self.lint(ledger=None)
         self.assertEqual(code, 0)
         self.assertEqual(payload["status"], "pass_with_warnings")
+        self.assertEqual(payload["summary"], {"errors": 0, "warnings": 1})
         self.assertIn("XC003", [f["code"] for f in payload["findings"]])
 
     def test_strict_mode_fails_on_warning(self):

@@ -216,9 +216,6 @@ def lint(run_dir, ledger_path=None, findings_path=None):
             ledger = _load_json(lp, findings, "coverage-ledger.json")
             if ledger is not None:
                 units = check_ledger(ledger, findings)
-        elif meta.get("run_status") == "complete":
-            findings.append(Finding("XC003", "warning", "coverage-ledger.json",
-                                    "complete run has no coverage-ledger.json; the coverage claim is unverifiable", ""))
         if units is not None or meta.get("run_status") == "complete":
             check_cross(meta, units, findings, run_dir)
     return findings

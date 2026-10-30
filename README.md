@@ -17,7 +17,7 @@ That is the gap this tool fills: it checks the run's terminal-state claim itself
 Does:
 
 - validates required fields, `profile`, `scope_paths`, `budget`, `execution_policy`, `run_status`
-- enforces the three documented `incomplete_reason` tokens and their mutual exclusion with `complete`
+- enforces the three reason tokens documented in `SKILL.md`'s cost-budget section and their mutual exclusion with `complete`
 - cross-checks a `complete` claim against `coverage-ledger.json`: no `candidate`, `planned`, `in_progress`, `blocked` or `deferred` units may remain, and `findings.json` must exist
 - cross-checks `validation_budget_exhausted` (must leave a `candidate` unit holding the unvalidated fingerprint) and `budget_cannot_fund_reconnaissance_and_reserves` (no ledger units may exist, because no agent ran)
 - exits `0` / `1` / `2` and prints stable JSON with `--json`
@@ -101,6 +101,7 @@ Searched before writing (`gh search repos "security audit skill"`, `gh search re
 - The documented token list is taken from `SKILL.md` at commit `HEAD` on 2026-10-30; if upstream adds a reason, pass it in a new release.
 - Only checks contract shape and cross-artifact consistency, not audit quality.
 - `quick`/scoped `run_status` semantics are undefined upstream (issue #78, point 1); this tool accepts either terminal value for those profiles.
+- `critic_budget_exhausted` is written at `SKILL.md:132` as the run-incomplete reason (not literally as the `incomplete_reason` key); it is accepted here because issue #78 lists it among the mandated exact tokens.
 - Expects `coverage-ledger.json` to be a JSON array of units and `findings.json` to be a JSON array, matching upstream's validators.
 
 ## License
