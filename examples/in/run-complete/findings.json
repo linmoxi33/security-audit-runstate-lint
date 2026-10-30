@@ -1,0 +1,4 @@
+[
+  {"verdict": "confirmed", "fingerprint": "widget:auth-bypass",
+   "title": "Path traversal in file loader"}
+]

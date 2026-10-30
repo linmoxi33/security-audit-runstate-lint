@@ -1,0 +1,11 @@
+{
+  "tool": "security-audit-runstate-lint",
+  "version": "1.0.0",
+  "run_dir": "examples/in/run-complete",
+  "status": "pass",
+  "summary": {
+    "errors": 0,
+    "warnings": 0
+  },
+  "findings": []
+}

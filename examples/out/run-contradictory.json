@@ -1,0 +1,47 @@
+{
+  "tool": "security-audit-runstate-lint",
+  "version": "1.0.0",
+  "run_dir": "examples/in/run-contradictory",
+  "status": "fail",
+  "summary": {
+    "errors": 5,
+    "warnings": 0
+  },
+  "findings": [
+    {
+      "code": "RS006",
+      "severity": "error",
+      "file": "run-metadata.json",
+      "message": "profile 'fast' is not one of quick, standard, deep",
+      "hint": ""
+    },
+    {
+      "code": "RS008",
+      "severity": "error",
+      "file": "run-metadata.json",
+      "message": "scope_paths must be an array of strings",
+      "hint": ""
+    },
+    {
+      "code": "RS009",
+      "severity": "error",
+      "file": "run-metadata.json",
+      "message": "budget must be null or a positive integer, got 0",
+      "hint": "a strict agent-invocation budget cannot be fractional or negative"
+    },
+    {
+      "code": "XC004",
+      "severity": "error",
+      "file": "coverage-ledger.json",
+      "message": "complete run still has 1 candidate unit(s): unvalidated work contradicts terminal state (a)",
+      "hint": "validate them, or record run_status incomplete with validation_budget_exhausted"
+    },
+    {
+      "code": "XC005",
+      "severity": "error",
+      "file": "coverage-ledger.json",
+      "message": "complete run still has 1 unit(s) in planned, in_progress, blocked, deferred",
+      "hint": "no unit may remain open when the run claims completeness"
+    }
+  ]
+}

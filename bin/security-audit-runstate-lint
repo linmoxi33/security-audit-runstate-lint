@@ -1,0 +1,284 @@
+#!/usr/bin/env python3
+"""Offline linter for a cloudflare/security-audit-skill run directory.
+
+Validates run-metadata.json against the run-state contract in SKILL.md and
+cross-checks the completion claim against coverage-ledger.json / findings.json.
+No network access, no third-party dependencies.
+"""
+import argparse
+import json
+import os
+import sys
+
+VERSION = "1.0.0"
+TOOL = "security-audit-runstate-lint"
+
+REQUIRED_FIELDS = [
+    "run_id",
+    "repo",
+    "target",
+    "source_ref",
+    "profile",
+    "scope_paths",
+    "budget",
+    "execution_policy",
+    "run_status",
+]
+PROFILES = ("quick", "standard", "deep")
+RUN_STATUSES = ("in_progress", "complete", "incomplete")
+# Exact tokens documented in SKILL.md (lines 123, 132, 134).
+INCOMPLETE_REASONS = (
+    "budget_cannot_fund_reconnaissance_and_reserves",
+    "critic_budget_exhausted",
+    "validation_budget_exhausted",
+)
+# Ledger states that still represent outstanding work (SKILL.md "two terminal states").
+OPEN_LEDGER_STATES = ("planned", "in_progress", "blocked", "deferred")
+
+EXIT_PASS = 0
+EXIT_FINDINGS = 1
+EXIT_USAGE = 2
+
+
+class Finding:
+    __slots__ = ("code", "severity", "file", "message", "hint")
+
+    def __init__(self, code, severity, file, message, hint=""):
+        self.code = code
+        self.severity = severity
+        self.file = file
+        self.message = message
+        self.hint = hint
+
+    def as_dict(self):
+        return {
+            "code": self.code,
+            "severity": self.severity,
+            "file": self.file,
+            "message": self.message,
+            "hint": self.hint,
+        }
+
+
+def _load_json(path, findings, rel):
+    if not os.path.isfile(path):
+        findings.append(Finding("RS001", "error", rel,
+                                "%s is missing" % rel,
+                                "write the file before the run can terminate"))
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except (ValueError, OSError) as exc:
+        findings.append(Finding("RS002", "error", rel,
+                                "%s is not readable JSON: %s" % (rel, exc),
+                                "fix the JSON syntax"))
+        return None
+
+
+def check_metadata(meta, findings):
+    if not isinstance(meta, dict):
+        findings.append(Finding("RS003", "error", "run-metadata.json",
+                                "run-metadata.json must be a JSON object", ""))
+        return
+    for field in REQUIRED_FIELDS:
+        if field not in meta:
+            findings.append(Finding("RS004", "error", "run-metadata.json",
+                                    "required field %r is missing" % field,
+                                    "SKILL.md:86 requires this field"))
+
+    status = meta.get("run_status")
+    if "run_status" in meta and status not in RUN_STATUSES:
+        findings.append(Finding("RS005", "error", "run-metadata.json",
+                                "run_status %r is not one of %s" % (status, ", ".join(RUN_STATUSES)),
+                                "use in_progress, complete or incomplete"))
+
+    if "profile" in meta and meta.get("profile") not in PROFILES:
+        findings.append(Finding("RS006", "error", "run-metadata.json",
+                                "profile %r is not one of %s" % (meta.get("profile"), ", ".join(PROFILES)),
+                                ""))
+
+    policy = meta.get("execution_policy")
+    if "execution_policy" in meta and policy != "sandboxed-source-and-local-only":
+        findings.append(Finding("RS007", "error", "run-metadata.json",
+                                "execution_policy must be \"sandboxed-source-and-local-only\", got %r" % (policy,),
+                                "SKILL.md:86 pins this literal"))
+
+    scope = meta.get("scope_paths")
+    if "scope_paths" in meta and (not isinstance(scope, list) or
+                                  any(not isinstance(item, str) for item in scope)):
+        findings.append(Finding("RS008", "error", "run-metadata.json",
+                                "scope_paths must be an array of strings", ""))
+
+    if "budget" in meta:
+        budget = meta.get("budget")
+        if budget is not None and (isinstance(budget, bool) or
+                                   not isinstance(budget, int) or budget < 1):
+            findings.append(Finding("RS009", "error", "run-metadata.json",
+                                    "budget must be null or a positive integer, got %r" % (budget,),
+                                    "a strict agent-invocation budget cannot be fractional or negative"))
+
+    for field in ("run_id", "repo", "target", "source_ref"):
+        value = meta.get(field)
+        if field in meta and (not isinstance(value, str) or not value.strip()):
+            findings.append(Finding("RS010", "error", "run-metadata.json",
+                                    "%s must be a non-empty string" % field, ""))
+
+    reason = meta.get("incomplete_reason")
+    if status == "complete":
+        if "incomplete_reason" in meta:
+            findings.append(Finding("RS011", "error", "run-metadata.json",
+                                    "a complete run must not carry incomplete_reason (%r)" % (reason,),
+                                    "terminal states are exclusive"))
+    elif status == "incomplete":
+        if reason is None:
+            findings.append(Finding("RS012", "error", "run-metadata.json",
+                                    "run_status is incomplete but incomplete_reason is absent",
+                                    "SKILL.md:179 requires the exact reason"))
+        elif reason not in INCOMPLETE_REASONS:
+            findings.append(Finding("RS013", "error", "run-metadata.json",
+                                    "incomplete_reason %r is not a documented token" % (reason,),
+                                    "documented tokens: %s" % ", ".join(INCOMPLETE_REASONS)))
+
+
+def check_ledger(ledger, findings):
+    if not isinstance(ledger, list):
+        findings.append(Finding("XC001", "error", "coverage-ledger.json",
+                                "coverage-ledger.json must be a JSON array of units", ""))
+        return None
+    units = []
+    for index, unit in enumerate(ledger):
+        if not isinstance(unit, dict):
+            findings.append(Finding("XC002", "error", "coverage-ledger.json",
+                                    "unit [%d] is not an object" % index, ""))
+            continue
+        units.append(unit)
+    return units
+
+
+def check_cross(meta, units, findings, run_dir):
+    status = meta.get("run_status")
+    reason = meta.get("incomplete_reason")
+
+    if units is None:
+        if status == "complete":
+            findings.append(Finding("XC003", "warning", "coverage-ledger.json",
+                                    "complete run has no readable coverage ledger; the coverage claim is unverifiable",
+                                    "pass --ledger or drop the ledger into the run directory"))
+        return
+
+    open_units = [u for u in units if u.get("status") in OPEN_LEDGER_STATES]
+    candidate_units = [u for u in units if u.get("status") == "candidate"]
+
+    if status == "complete":
+        if candidate_units:
+            findings.append(Finding("XC004", "error", "coverage-ledger.json",
+                                    "complete run still has %d candidate unit(s): unvalidated work contradicts terminal state (a)"
+                                    % len(candidate_units),
+                                    "validate them, or record run_status incomplete with validation_budget_exhausted"))
+        if open_units:
+            findings.append(Finding("XC005", "error", "coverage-ledger.json",
+                                    "complete run still has %d unit(s) in %s"
+                                    % (len(open_units), ", ".join(OPEN_LEDGER_STATES)),
+                                    "no unit may remain open when the run claims completeness"))
+        findings_path = os.path.join(run_dir, "findings.json")
+        if not os.path.isfile(findings_path):
+            findings.append(Finding("XC006", "error", "findings.json",
+                                    "complete run requires findings.json (Phase 6 artifact)",
+                                    "write findings.json, even when it is an empty array"))
+        else:
+            findings_data = _load_json(findings_path, findings, "findings.json")
+            if findings_data is not None and not isinstance(findings_data, list):
+                findings.append(Finding("XC007", "error", "findings.json",
+                                        "findings.json must be a JSON array", ""))
+
+    if status == "incomplete" and reason == "validation_budget_exhausted" and not candidate_units:
+        findings.append(Finding("XC008", "error", "coverage-ledger.json",
+                                "validation_budget_exhausted requires at least one candidate unit holding the unvalidated fingerprint",
+                                "SKILL.md:134 keeps unvalidated fingerprints on candidate units"))
+
+    if status == "incomplete" and reason == "budget_cannot_fund_reconnaissance_and_reserves" and units:
+        findings.append(Finding("XC009", "error", "coverage-ledger.json",
+                                "this reason means no audit pass ran, but the ledger has %d unit(s)" % len(units),
+                                "SKILL.md:123 launches no agent under this reason"))
+
+
+def lint(run_dir, ledger_path=None, findings_path=None):
+    findings = []
+    meta_path = os.path.join(run_dir, "run-metadata.json")
+    meta = _load_json(meta_path, findings, "run-metadata.json")
+    units = None
+
+    if meta is not None:
+        check_metadata(meta, findings)
+        lp = ledger_path or os.path.join(run_dir, "coverage-ledger.json")
+        if os.path.isfile(lp):
+            ledger = _load_json(lp, findings, "coverage-ledger.json")
+            if ledger is not None:
+                units = check_ledger(ledger, findings)
+        elif meta.get("run_status") == "complete":
+            findings.append(Finding("XC003", "warning", "coverage-ledger.json",
+                                    "complete run has no coverage-ledger.json; the coverage claim is unverifiable", ""))
+        if units is not None or meta.get("run_status") == "complete":
+            check_cross(meta, units, findings, run_dir)
+    return findings
+
+
+def render_text(findings, run_dir):
+    lines = ["%s %s" % (TOOL, VERSION), "run: %s" % run_dir]
+    if not findings:
+        lines.append("PASS: run-state contract satisfied")
+        return "\n".join(lines)
+    for item in findings:
+        lines.append("%s %s [%s] %s" % (item.severity.upper(), item.code, item.file, item.message))
+        if item.hint:
+            lines.append("    hint: %s" % item.hint)
+    errors = sum(1 for f in findings if f.severity == "error")
+    lines.append("%d error(s), %d warning(s)" % (errors, len(findings) - errors))
+    return "\n".join(lines)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        prog=TOOL,
+        description="Validate a security-audit-skill run directory offline.")
+    parser.add_argument("run_dir", help="directory containing run-metadata.json")
+    parser.add_argument("--ledger", help="path to coverage-ledger.json (default: inside run_dir)")
+    parser.add_argument("--json", action="store_true", dest="as_json",
+                        help="emit machine-readable JSON on stdout")
+    parser.add_argument("--strict", action="store_true",
+                        help="treat warnings as failures")
+    parser.add_argument("--version", action="version", version="%s %s" % (TOOL, VERSION))
+    args = parser.parse_args(argv)
+
+    if not os.path.isdir(args.run_dir):
+        message = "run directory not found: %s" % args.run_dir
+        if args.as_json:
+            print(json.dumps({"tool": TOOL, "version": VERSION, "status": "error",
+                              "error": message}, indent=2))
+        else:
+            print("%s: %s" % (TOOL, message), file=sys.stderr)
+        return EXIT_USAGE
+
+    findings = lint(args.run_dir, args.ledger)
+    errors = sum(1 for f in findings if f.severity == "error")
+    warnings = len(findings) - errors
+    failed = errors > 0 or (args.strict and warnings > 0)
+
+    if args.as_json:
+        payload = {
+            "tool": TOOL,
+            "version": VERSION,
+            "run_dir": args.run_dir,
+            "status": "fail" if failed else ("pass_with_warnings" if warnings else "pass"),
+            "summary": {"errors": errors, "warnings": warnings},
+            "findings": [f.as_dict() for f in findings],
+        }
+        print(json.dumps(payload, indent=2, sort_keys=False))
+    else:
+        print(render_text(findings, args.run_dir))
+    return EXIT_FINDINGS if failed else EXIT_PASS
+
+
+if __name__ == "__main__":
+    sys.exit(main())

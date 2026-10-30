@@ -1,0 +1,11 @@
+{
+  "run_id": "run-2026-10-30-a",
+  "repo": "example/widget",
+  "target": "/src/widget",
+  "source_ref": "HEAD",
+  "profile": "standard",
+  "scope_paths": ["src/"],
+  "budget": 12,
+  "execution_policy": "sandboxed-source-and-local-only",
+  "run_status": "complete"
+}

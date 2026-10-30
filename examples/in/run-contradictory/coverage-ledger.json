@@ -1,0 +1,6 @@
+[
+  {"coverage_id": "widget-http-entry", "status": "candidate",
+   "result_fingerprints": ["widget:auth-bypass"]},
+  {"coverage_id": "widget-file-loader", "status": "planned",
+   "result_fingerprints": []}
+]
